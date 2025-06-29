@@ -1,4 +1,4 @@
-## BANet
+## BANet [ICCV 2025]
 
 This repository contains the source code for our paper:
 
