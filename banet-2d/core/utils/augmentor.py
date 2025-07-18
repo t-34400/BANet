@@ -113,27 +113,28 @@ class FlowAugmentor:
     def spatial_transform(self, img1, img2, flow):
         # randomly sample scale
         ht, wd = img1.shape[:2]
-        min_scale = np.maximum(
-            (self.crop_size[0] + 8) / float(ht), 
-            (self.crop_size[1] + 8) / float(wd))
+        x = 0
+        # min_scale = np.maximum(
+        #     (self.crop_size[0] + 8) / float(ht), 
+        #     (self.crop_size[1] + 8) / float(wd))
 
-        scale = 2 ** np.random.uniform(self.min_scale, self.max_scale)
-        scale_x = scale
-        scale_y = scale
-        if np.random.rand() < self.stretch_prob:
-            scale_x *= 2 ** np.random.uniform(-self.max_stretch, self.max_stretch)
-            scale_y *= 2 ** np.random.uniform(-self.max_stretch, self.max_stretch)
+        # scale = 2 ** np.random.uniform(self.min_scale, self.max_scale)
+        # scale_x = scale
+        # scale_y = scale
+        # if np.random.rand() < self.stretch_prob:
+        #     scale_x *= 2 ** np.random.uniform(-self.max_stretch, self.max_stretch)
+        #     scale_y *= 2 ** np.random.uniform(-self.max_stretch, self.max_stretch)
         
-        scale_x = np.clip(scale_x, min_scale, None)
-        scale_y = np.clip(scale_y, min_scale, None)
+        # scale_x = np.clip(scale_x, min_scale, None)
+        # scale_y = np.clip(scale_y, min_scale, None)
 
-        if np.random.rand() < self.spatial_aug_prob:
-            # rescale the images
-            img1 = cv2.resize(img1, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            img2 = cv2.resize(img2, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
-            flow = cv2.resize(flow, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+        # if np.random.rand() < self.spatial_aug_prob:
+        #     # rescale the images
+        #     img1 = cv2.resize(img1, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+        #     img2 = cv2.resize(img2, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
+        #     flow = cv2.resize(flow, None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_LINEAR)
 
-            flow = flow * [scale_x, scale_y]
+        #     flow = flow * [scale_x, scale_y]
 
         if self.do_flip:
             if np.random.rand() < self.h_flip_prob and self.do_flip == 'hf': # h-flip
