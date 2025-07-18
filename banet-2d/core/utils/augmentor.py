@@ -113,7 +113,6 @@ class FlowAugmentor:
     def spatial_transform(self, img1, img2, flow):
         # randomly sample scale
         ht, wd = img1.shape[:2]
-        x = 0
         # min_scale = np.maximum(
         #     (self.crop_size[0] + 8) / float(ht), 
         #     (self.crop_size[1] + 8) / float(wd))
