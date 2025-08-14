@@ -45,7 +45,7 @@ if __name__ == "__main__":
     p.add_argument("--onnx_out", default="banet2d.onnx")
     p.add_argument("--max_disp", type=int, default=192)
     p.add_argument("--height", type=int, default=960)   # must be divisible by 32
-    p.add_argument("--width", type=int, default=1920)   # must be divisible by 32
+    p.add_argument("--width", type=int, default=1280)   # must be divisible by 32
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

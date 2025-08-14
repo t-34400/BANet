@@ -21,6 +21,6 @@ source "$(conda info --base)/etc/profile.d/conda.sh" || { echo "[ERROR] Failed t
 conda activate "$ENV_NAME" || { echo "[ERROR] Failed to activate environment '$ENV_NAME'"; exit 1; }
 
 pip install torch==2.4.* torchvision==0.19.* --index-url https://download.pytorch.org/whl/cu124
-pip install onnx "timm==0.5.*"
+pip install onnx "timm==0.5.*" executorch
 
 echo "[INFO] Environment '$ENV_NAME' setup completed."
