@@ -1,0 +1,15 @@
+name: banet
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pillow
+  - imageio
+  - matplotlib
+  - numpy
+  - scipy
+  - scikit-image
+  - tqdm
+  - opencv=4.*=headless*
