@@ -1,15 +1,13 @@
-import argparse, torch
+import argparse
+import torch
+import torch.nn as nn
 from core.BANet import BANet
 
 def build_model(args, device):
-    m = BANet(args)
-    # Prefer safe loading; fall back for older PyTorch
-    try:
-        sd = torch.load(args.restore_ckpt, map_location="cpu", weights_only=True)
-    except TypeError:
-        sd = torch.load(args.restore_ckpt, map_location="cpu")
-    if "state_dict" in sd: sd = sd["state_dict"]
-    m.load_state_dict(sd, strict=False)
+    m = nn.DataParallel(BANet(args))
+    sd = torch.load(args.restore_ckpt)
+    m.load_state_dict(sd, strict=True)
+    m = m.module
     m.eval().to(device)
     return m
 

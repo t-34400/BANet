@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-import argparse, copy, os, sys, torch
+import argparse, copy, os, sys
+import torch
+import torch.nn as nn
+from torch.nn.utils import fuse_conv_bn_eval
 
 sys.path.append("core")
 from core.BANet import BANet
 from core.submodule import disparity_regression, context_upsample
 
 def build_model(args, device):
-    m = BANet(args)
-    try:
-        sd = torch.load(args.restore_ckpt, map_location="cpu", weights_only=True)
-    except TypeError:
-        sd = torch.load(args.restore_ckpt, map_location="cpu")
-    if isinstance(sd, dict) and "state_dict" in sd:
-        sd = sd["state_dict"]
-    m.load_state_dict(sd, strict=False)
+    m = nn.DataParallel(BANet(args))
+    sd = torch.load(args.restore_ckpt)
+    m.load_state_dict(sd, strict=True)
+    m = m.module
     m.eval().to(device)
     return m
 
@@ -67,15 +66,77 @@ def split_fnet_for_export(m: BANet, max_disp: int) -> BANet:
     m.forward = _forward_export.__get__(m, BANet)
     return m
 
+def fuse_deconv_bn_eval(deconv: nn.ConvTranspose2d, bn: nn.BatchNorm2d) -> nn.ConvTranspose2d:
+    if bn.training:
+        raise RuntimeError("BatchNorm must be in eval() mode before folding.")
+    if bn.running_mean is None or bn.running_var is None:
+        raise RuntimeError("BatchNorm running stats are missing.")
+
+    with torch.no_grad():
+        # scale = gamma / sqrt(var + eps), shift handled in bias update
+        scale = bn.weight / torch.sqrt(bn.running_var + bn.eps)  # [Cout]
+        Cout, Cin = deconv.out_channels, deconv.in_channels
+        g = deconv.groups
+        ocpg = Cout // g
+        icpg = Cin // g
+
+        # Ensure bias exists
+        if deconv.bias is None:
+            deconv.bias = nn.Parameter(torch.zeros(Cout, dtype=deconv.weight.dtype, device=deconv.weight.device))
+
+        # W shape: (Cin, Cout/groups, kH, kW). Scale along Cout dimension.
+        s = scale.view(g, ocpg)                                  # [g, ocpg]
+        s = s.repeat_interleave(icpg, dim=0).view(Cin, ocpg)     # [Cin, ocpg]
+        deconv.weight.mul_(s[:, :, None, None])
+
+        # b' = (b - mean) * scale + beta
+        deconv.bias.copy_((deconv.bias - bn.running_mean) * scale + bn.bias)
+
+    return deconv
+
+def fuse_all_conv_bn(module: nn.Module):
+    # Recurse first
+    for name, child in list(module.named_children()):
+        fuse_all_conv_bn(child)
+
+        # Case 1: Sequential pipeline
+        if isinstance(child, nn.Sequential):
+            fused_layers, i = [], 0
+            L = len(child)
+            while i < L:
+                a = child[i]
+                b = child[i + 1] if i + 1 < L else None
+                if isinstance(a, nn.Conv2d) and isinstance(b, nn.BatchNorm2d):
+                    fused_layers.append(fuse_conv_bn_eval(a.eval(), b.eval()))
+                    i += 2
+                elif isinstance(a, nn.ConvTranspose2d) and isinstance(b, nn.BatchNorm2d):
+                    fused_layers.append(fuse_deconv_bn_eval(a.eval(), b.eval()))
+                    i += 2
+                else:
+                    fused_layers.append(a)
+                    i += 1
+            setattr(module, name, nn.Sequential(*fused_layers))
+            continue
+
+        # Case 2: Attribute pattern: self.conv / self.bn
+        conv = getattr(child, "conv", None)
+        bn   = getattr(child, "bn", None)
+        if isinstance(conv, nn.Conv2d) and isinstance(bn, nn.BatchNorm2d):
+            setattr(child, "conv", fuse_conv_bn_eval(conv.eval(), bn.eval()))
+            setattr(child, "bn", nn.Identity())
+        elif isinstance(conv, nn.ConvTranspose2d) and isinstance(bn, nn.BatchNorm2d):
+            setattr(child, "conv", fuse_deconv_bn_eval(conv.eval(), bn.eval()))
+            setattr(child, "bn", nn.Identity())
+
 def export_pte(model, left, right, out_path, backend):
     from executorch.exir import to_edge_transform_and_lower
     partitioner = None
     if backend == "xnnpack":
         from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
-        part = XnnpackPartitioner()
+        partitioner = [XnnpackPartitioner()]
     elif backend == "vulkan":
         from executorch.backends.vulkan.partition.vulkan_partitioner import VulkanPartitioner
-        part = VulkanPartitioner()
+        partitioner = [VulkanPartitioner()]
     elif backend == "portable":
         partitioner = None
     else:
@@ -88,16 +149,31 @@ def export_pte(model, left, right, out_path, backend):
         if backend != "portable":
             print(f"[WARN] Backend pre/lowering failed for '{backend}': {e}")
             print("[WARN] Falling back to 'portable'.")
+            backend=None
             et_prog = to_edge_transform_and_lower(ep, partitioner=None).to_executorch()
         else:
-            raise
+            raise e
+        
+    for method in et_prog.methods:
+        print(f"[Info] Method: {method}")
+        
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     et_prog.save(out_path)
+
+    return backend
+
+def export_ops_yml(model_path, ops_yml_path):
+    from executorch.codegen.tools.gen_oplist import gen_oplist
+    gen_oplist(
+        output_path=ops_yml_path,
+        model_file_path=model_path
+    )
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--restore_ckpt", required=True)
-    p.add_argument("--pte_out", default=".local/output/banet2d.pte")
+    p.add_argument("--pte_out", default=".local/output/banet2d_xnn.pte")
+    p.add_argument("--ops_yml_out", default=".local/output/banet2d_xnn_ops.yml")
     p.add_argument("--backend", choices=["xnnpack", "vulkan", "portable"], default="xnnpack")
     p.add_argument("--max_disp", type=int, default=192)
     p.add_argument("--height", type=int, default=480)
@@ -111,6 +187,7 @@ if __name__ == "__main__":
 
     device = "cpu"
     model = build_model(args, device)
+    fuse_all_conv_bn(model)
     model = split_fnet_for_export(model, args.max_disp)
 
     b, c, h, w = 1, 3, args.height, args.width
@@ -118,8 +195,10 @@ if __name__ == "__main__":
     right = torch.randn(b, c, h, w, device=device, dtype=torch.float32)
 
     try:
-        export_pte(model, left, right, args.pte_out, args.backend)
-        print(f"[INFO] Exported PTE -> {args.pte_out} (backend={args.backend})")
+        output_backend = export_pte(model, left, right, args.pte_out, args.backend)
+        print(f"[INFO] Exported PTE -> {args.pte_out} (backend={output_backend})")
     except Exception as e:
         print(f"[ERROR] PTE export failed: {e}")
         raise
+
+    export_ops_yml(args.pte_out, args.ops_yml_out)
